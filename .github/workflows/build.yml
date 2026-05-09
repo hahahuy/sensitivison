@@ -1,0 +1,88 @@
+name: Build and Deploy to Appetize
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build for simulator
+        run: |
+          xcodebuild \
+            -scheme Sensitivison \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            -derivedDataPath DerivedData \
+            build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" 2>&1
+
+      - name: Show build artifacts
+        run: |
+          find DerivedData -name "*.app" -type d 2>/dev/null | head -5
+          ls -la DerivedData/Build/Products/Debug-iphonesimulator/ 2>/dev/null || echo "No Products directory"
+
+      - name: Locate .app bundle
+        id: locate_app
+        run: |
+          APP_PATH=$(find DerivedData -name "Sensitivison.app" -type d | head -1)
+          echo "APP_PATH=$APP_PATH" >> $GITHUB_OUTPUT
+          echo "Found app at: $APP_PATH"
+
+      - name: Zip .app bundle
+        run: |
+          cd "$(dirname "${{ steps.locate_app.outputs.APP_PATH }}")"
+          zip -r Sensitivison.app.zip Sensitivison.app
+          echo "ZIP_PATH=$(pwd)/Sensitivison.app.zip" >> $GITHUB_ENV
+
+      - name: Upload to Appetize (create or update)
+        id: appetize
+        env:
+          APPETIZE_API_TOKEN: ${{ secrets.APPETIZE_API_TOKEN }}
+          APPETIZE_APP_KEY: ${{ secrets.APPETIZE_APP_KEY }}
+        run: |
+          if [ -n "$APPETIZE_APP_KEY" ]; then
+            echo "Updating existing Appetize app..."
+            RESPONSE=$(curl -s -X POST \
+              "https://api.appetize.io/v1/apps/$APPETIZE_APP_KEY" \
+              -u "$APPETIZE_API_TOKEN:" \
+              -F "file=@$ZIP_PATH" \
+              -F "platform=ios")
+          else
+            echo "Creating new Appetize app..."
+            RESPONSE=$(curl -s -X POST \
+              "https://api.appetize.io/v1/apps" \
+              -u "$APPETIZE_API_TOKEN:" \
+              -F "file=@$ZIP_PATH" \
+              -F "platform=ios")
+          fi
+          echo "Appetize response: $RESPONSE"
+          PUBLIC_KEY=$(echo "$RESPONSE" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('publicKey', d.get('appKey', '')))")
+          PUBLIC_URL=$(echo "$RESPONSE" | python3 -c "import sys, json; d=json.load(sys.stdin); print(d.get('publicURL', ''))")
+          echo "APP_KEY=$PUBLIC_KEY" >> $GITHUB_OUTPUT
+          echo "PUBLIC_URL=$PUBLIC_URL" >> $GITHUB_OUTPUT
+          echo "Appetize app key: $PUBLIC_KEY"
+          echo "Live URL: $PUBLIC_URL"
+
+      - name: Upload .app.zip as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sensitivison-simulator
+          path: ${{ env.ZIP_PATH }}
+          retention-days: 14

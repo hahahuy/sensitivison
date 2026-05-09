@@ -1,0 +1,6 @@
+name: peek_shield_simulation
+description: Dart CLI simulation script for PeekShield detection algorithm verification
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
